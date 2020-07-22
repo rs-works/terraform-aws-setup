@@ -1,0 +1,120 @@
+version: 2.1
+orbs:
+  slack: circleci/slack@3.3.0
+
+executors:
+  terraform:
+    docker:
+      - image: hashicorp/terraform:0.12.28
+    environment:
+      AWS_PROFILE: terraform-aws-iac
+      BASH: /bin/bash
+
+jobs:
+  check:
+    executor: terraform
+    parameters:
+      current:
+        type: string
+    steps:
+      - checkout
+      - run: terraform version
+      - run:
+          name: terraform format check
+          command: |
+            cd << parameters.current >>
+            terraform fmt -diff -check -recursive
+
+  plan:
+    executor: terraform
+    parameters:
+      current:
+        type: string
+    steps:
+      - checkout
+      - run: terraform version
+      - run:
+          name: terraform init
+          command: |
+            cd << parameters.current >>
+            terraform init -lock-timeout=60s
+      - run:
+          name: terraform validate
+          command: |
+            cd << parameters.current >>
+            terraform validate
+      - run:
+          name: terraform plan
+          command: |
+            cd << parameters.current >>
+            TF_STATUS=0
+            terraform plan -lock-timeout=60s -detailed-exitcode || TF_STATUS=$?
+            if [ $TF_STATUS -ne 2 ]; then
+              exit $TF_STATUS
+            fi
+      - persist_to_workspace:
+          root: .
+          paths:
+            - << parameters.current >>
+
+  deploy:
+    executor: terraform
+    parameters:
+      current:
+        type: string
+    steps:
+      - attach_workspace:
+          at: .
+      - run:
+          name: terraform apply
+          command: |
+            cd << parameters.current >>
+            ls -la
+            terraform apply -lock-timeout=60s -auto-approve
+      - run:
+          name: install apk slack
+          command: |
+            apk add bash
+            apk add --update-cache --upgrade curl
+          when: always
+      - slack/status
+
+workflows:
+  approved_deploy:
+    jobs:
+      - check:
+          current: terraform
+      - plan:
+          current: terraform
+          context: rs-works/terraform
+          requires:
+            - check
+      # - approval:
+      #     type: approval
+      #     requires:
+      #       - plan
+      #     filters:
+      #       branches:
+      #         only:
+      #           - master
+      # - deploy:
+      #     current: terraform
+      #     context: rs-works/terraform
+      #     requires:
+      #       - plan
+      #       - approval
+      #     filters:
+      #       branches:
+      #         only:
+      #           - master
+      # - slack/approval-notification:
+      #     message: "Pending approval"
+      #     mentions: "here"
+      #     color: "#F5E911"
+      #     context: rs-works/terraform
+      #     requires:
+      #       - plan
+      #     filters:
+      #       branches:
+      #         only:
+      #           - master
